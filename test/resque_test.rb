@@ -1,29 +1,22 @@
 require 'test_helper'
 
-describe "Resque" do
-  include Test::Unit::Assertions
-
-  before do
+context "Resque" do
+  setup do
     Resque.redis.flushall
 
     Resque.push(:people, { 'name' => 'chris' })
     Resque.push(:people, { 'name' => 'bob' })
     Resque.push(:people, { 'name' => 'mark' })
-    @original_redis = Resque.redis
   end
 
-  after do
-    Resque.redis = @original_redis
-  end
-
-  it "can set a namespace through a url-like string" do
+  test "can set a namespace through a url-like string" do
     assert Resque.redis
     assert_equal :resque, Resque.redis.namespace
     Resque.redis = 'localhost:9736/namespace'
     assert_equal 'namespace', Resque.redis.namespace
   end
 
-  it "redis= works correctly with a Redis::Namespace param" do
+  test "redis= works correctly with a Redis::Namespace param" do
     new_redis = Redis.new(:host => "localhost", :port => 9736)
     new_namespace = Redis::Namespace.new("namespace", :redis => new_redis)
     Resque.redis = new_namespace
@@ -32,12 +25,12 @@ describe "Resque" do
     Resque.redis = 'localhost:9736/namespace'
   end
 
-  it "can put jobs on a queue" do
+  test "can put jobs on a queue" do
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
   end
 
-  it "can grab jobs off a queue" do
+  test "can grab jobs off a queue" do
     Resque::Job.create(:jobs, 'some-job', 20, '/tmp')
 
     job = Resque.reserve(:jobs)
@@ -48,7 +41,7 @@ describe "Resque" do
     assert_equal '/tmp', job.args[1]
   end
 
-  it "can re-queue jobs" do
+  test "can re-queue jobs" do
     Resque::Job.create(:jobs, 'some-job', 20, '/tmp')
 
     job = Resque.reserve(:jobs)
@@ -57,7 +50,7 @@ describe "Resque" do
     assert_equal job, Resque.reserve(:jobs)
   end
 
-  it "can put jobs on a queue by way of an ivar" do
+  test "can put jobs on a queue by way of an ivar" do
     assert_equal 0, Resque.size(:ivar)
     assert Resque.enqueue(SomeIvarJob, 20, '/tmp')
     assert Resque.enqueue(SomeIvarJob, 20, '/tmp')
@@ -73,7 +66,7 @@ describe "Resque" do
     assert_equal nil, Resque.reserve(:ivar)
   end
 
-  it "can remove jobs from a queue by way of an ivar" do
+  test "can remove jobs from a queue by way of an ivar" do
     assert_equal 0, Resque.size(:ivar)
     assert Resque.enqueue(SomeIvarJob, 20, '/tmp')
     assert Resque.enqueue(SomeIvarJob, 30, '/tmp')
@@ -88,13 +81,13 @@ describe "Resque" do
     assert_equal 1, Resque.size(:ivar)
   end
 
-  it "jobs have a nice #inspect" do
+  test "jobs have a nice #inspect" do
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
     job = Resque.reserve(:jobs)
     assert_equal '(Job{jobs} | SomeJob | [20, "/tmp"])', job.inspect
   end
 
-  it "jobs can be destroyed" do
+  test "jobs can be destroyed" do
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
     assert Resque::Job.create(:jobs, 'BadJob', 20, '/tmp')
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
@@ -108,7 +101,7 @@ describe "Resque" do
     assert_equal 2, Resque.size(:jobs)
   end
 
-  it "jobs can it for equality" do
+  test "jobs can test for equality" do
     assert Resque::Job.create(:jobs, 'SomeJob', 20, '/tmp')
     assert Resque::Job.create(:jobs, 'some-job', 20, '/tmp')
     assert_equal Resque.reserve(:jobs), Resque.reserve(:jobs)
@@ -122,7 +115,7 @@ describe "Resque" do
     assert_not_equal Resque.reserve(:jobs), Resque.reserve(:jobs)
   end
 
-  it "can put jobs on a queue by way of a method" do
+  test "can put jobs on a queue by way of a method" do
     assert_equal 0, Resque.size(:method)
     assert Resque.enqueue(SomeMethodJob, 20, '/tmp')
     assert Resque.enqueue(SomeMethodJob, 20, '/tmp')
@@ -138,40 +131,30 @@ describe "Resque" do
     assert_equal nil, Resque.reserve(:method)
   end
 
-  it "can define a queue for jobs by way of a method" do
-    assert_equal 0, Resque.size(:method)
-    assert Resque.enqueue_to(:new_queue, SomeMethodJob, 20, '/tmp')
-
-    job = Resque.reserve(:new_queue)
-    assert_equal SomeMethodJob, job.payload_class
-    assert_equal 20, job.args[0]
-    assert_equal '/tmp', job.args[1]
-  end
-
-  it "needs to infer a queue with enqueue" do
+  test "needs to infer a queue with enqueue" do
     assert_raises Resque::NoQueueError do
       Resque.enqueue(SomeJob, 20, '/tmp')
     end
   end
 
-  it "validates job for queue presence" do
+  test "validates job for queue presence" do
     assert_raises Resque::NoQueueError do
       Resque.validate(SomeJob)
     end
   end
 
-  it "can put items on a queue" do
+  test "can put items on a queue" do
     assert Resque.push(:people, { 'name' => 'jon' })
   end
 
-  it "can pull items off a queue" do
+  test "can pull items off a queue" do
     assert_equal({ 'name' => 'chris' }, Resque.pop(:people))
     assert_equal({ 'name' => 'bob' }, Resque.pop(:people))
     assert_equal({ 'name' => 'mark' }, Resque.pop(:people))
     assert_equal nil, Resque.pop(:people)
   end
 
-  it "knows how big a queue is" do
+  test "knows how big a queue is" do
     assert_equal 3, Resque.size(:people)
 
     assert_equal({ 'name' => 'chris' }, Resque.pop(:people))
@@ -182,12 +165,12 @@ describe "Resque" do
     assert_equal 0, Resque.size(:people)
   end
 
-  it "can peek at a queue" do
+  test "can peek at a queue" do
     assert_equal({ 'name' => 'chris' }, Resque.peek(:people))
     assert_equal 3, Resque.size(:people)
   end
 
-  it "can peek multiple items on a queue" do
+  test "can peek multiple items on a queue" do
     assert_equal({ 'name' => 'bob' }, Resque.peek(:people, 1, 1))
 
     assert_equal([{ 'name' => 'bob' }, { 'name' => 'mark' }], Resque.peek(:people, 1, 2))
@@ -198,18 +181,18 @@ describe "Resque" do
     assert_equal [], Resque.peek(:people, 3, 2)
   end
 
-  it "knows what queues it is managing" do
+  test "knows what queues it is managing" do
     assert_equal %w( people ), Resque.queues
     Resque.push(:cars, { 'make' => 'bmw' })
     assert_equal %w( cars people ), Resque.queues
   end
 
-  it "queues are always a list" do
+  test "queues are always a list" do
     Resque.redis.flushall
     assert_equal [], Resque.queues
   end
 
-  it "can delete a queue" do
+  test "can delete a queue" do
     Resque.push(:cars, { 'make' => 'bmw' })
     assert_equal %w( cars people ), Resque.queues
     Resque.remove_queue(:people)
@@ -217,17 +200,17 @@ describe "Resque" do
     assert_equal nil, Resque.pop(:people)
   end
 
-  it "keeps track of resque keys" do
-    assert_equal ["queue:people", "queues"].sort, Resque.keys.sort
+  test "keeps track of resque keys" do
+    assert_equal ["queue:people", "queues"], Resque.keys
   end
 
-  it "badly wants a class name, too" do
+  test "badly wants a class name, too" do
     assert_raises Resque::NoClassError do
       Resque::Job.create(:jobs, nil)
     end
   end
 
-  it "keeps stats" do
+  test "keeps stats" do
     Resque::Job.create(:jobs, SomeJob, 20, '/tmp')
     Resque::Job.create(:jobs, BadJob)
     Resque::Job.create(:jobs, GoodJob)
@@ -255,20 +238,16 @@ describe "Resque" do
     assert_equal 3, stats[:queues]
     assert_equal 3, stats[:processed]
     assert_equal 1, stats[:failed]
-    if ENV.key? 'RESQUE_DISTRIBUTED'
-      assert_equal [Resque.redis.respond_to?(:server) ? 'localhost:9736, localhost:9737' : 'redis://localhost:9736/0, redis://localhost:9737/0'], stats[:servers]
-    else
-      assert_equal [Resque.redis.respond_to?(:server) ? 'localhost:9736' : 'redis://localhost:9736/0'], stats[:servers]
+    assert_equal [Resque.redis.respond_to?(:server) ? 'localhost:9736' : 'redis://localhost:9736/0'], stats[:servers]
+  end
+
+  test "decode bad json" do
+    assert_raises Resque::Helpers::DecodeException do
+      Resque.decode("{\"error\":\"Module not found \\u002\"}")
     end
   end
 
-  it "decode bad json" do
-    assert_raises Resque::DecodeException do
-      Resque.coder.decode("{\"error\":\"Module not found \\u002\"}")
-    end
-  end
-
-  it "inlining jobs" do
+  test "inlining jobs" do
     begin
       Resque.inline = true
       Resque.enqueue(SomeIvarJob, 20, '/tmp')
@@ -276,9 +255,5 @@ describe "Resque" do
     ensure
       Resque.inline = false
     end
-  end
-
-  it 'treats symbols and strings the same' do
-    assert_equal Resque.queue(:people), Resque.queue('people')
   end
 end

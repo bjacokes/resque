@@ -35,19 +35,9 @@ module Resque
 
       names.map! { |name| "worker:#{name}" }
 
-      reportedly_working = {}
-
-      begin
-        reportedly_working = redis.mapped_mget(*names).reject do |key, value|
-          value.nil? || value.empty?
-        end
-      rescue Redis::Distributed::CannotDistribute
-        names.each do |name|
-          value = redis.get name
-          reportedly_working[name] = value unless value.nil? || value.empty?
-        end
+      reportedly_working = redis.mapped_mget(*names).reject do |key, value|
+        value.nil? || value.empty?
       end
-
       reportedly_working.keys.map do |key|
         find key.sub("worker:", '')
       end.compact
@@ -89,8 +79,6 @@ module Resque
     # removed without needing to restart workers using this method.
     def initialize(*queues)
       @queues = queues.map { |queue| queue.to_s.strip }
-      @shutdown = nil
-      @paused = nil
       validate_queues
     end
 
@@ -128,18 +116,15 @@ module Resque
       loop do
         break if shutdown?
 
-        pause if should_pause?
-
-        if job = reserve(interval)
+        if not paused? and job = reserve
           log "got: #{job.inspect}"
-          job.worker = self
           run_hook :before_fork, job
           working_on job
 
           if @child = fork
             srand # Reseeding
             procline "Forked #{@child} at #{Time.now.to_i}"
-            Process.wait(@child)
+            Process.wait
           else
             procline "Processing #{job.queue} since #{Time.now.to_i}"
             perform(job, &block)
@@ -150,8 +135,9 @@ module Resque
           @child = nil
         else
           break if interval.zero?
-          log! "Timed out after #{interval} seconds"
+          log! "Sleeping for #{interval} seconds"
           procline paused? ? "Paused" : "Waiting for #{@queues.join(',')}"
+          sleep interval
         end
       end
 
@@ -164,7 +150,6 @@ module Resque
     def process(job = nil, &block)
       return unless job ||= reserve
 
-      job.worker = self
       working_on job
       perform(job, &block)
     ensure
@@ -193,31 +178,27 @@ module Resque
 
     # Attempts to grab a job off one of the provided queues. Returns
     # nil if no job can be found.
-    def reserve(interval = 5.0)
-      interval = interval.to_i
-      multi_queue = MultiQueue.new(
-        queues.map {|queue| Queue.new(queue, Resque.redis, Resque.coder) },
-        Resque.redis)
-
-      if interval < 1
-        begin
-          queue, job = multi_queue.pop(true)
-        rescue ThreadError
-          queue, job = nil
+    def reserve
+      queues.each do |queue|
+        log! "Checking #{queue}"
+        if job = Resque::Job.reserve(queue)
+          log! "Found job on #{queue}"
+          return job
         end
-      else
-        queue, job = multi_queue.poll(interval.to_i)
       end
 
-      log! "Found job on #{queue}"
-      Job.new(queue.name, job) if queue && job
+      nil
+    rescue Exception => e
+      log "Error reserving job: #{e.inspect}"
+      log e.backtrace.join("\n")
+      raise e
     end
 
     # Returns a list of queues to use when searching for a job.
     # A splat ("*") means you want every queue (in alpha order) - this
     # can be useful for dynamically adding new queues.
     def queues
-      @queues.map {|queue| queue == "*" ? Resque.queues.sort : queue }.flatten.uniq
+      @queues[0] == "*" ? Resque.queues.sort : @queues
     end
 
     # Not every platform supports fork. Here we do our magic to
@@ -277,6 +258,7 @@ module Resque
         trap('QUIT') { shutdown   }
         trap('USR1') { kill_child }
         trap('USR2') { pause_processing }
+        trap('CONT') { unpause_processing }
       rescue ArgumentError
         warn "Signals QUIT, USR1, USR2, and/or CONT not supported."
       end
@@ -317,21 +299,8 @@ module Resque
     end
 
     # are we paused?
-    def should_pause?
+    def paused?
       @paused
-    end
-    alias :paused? :should_pause?
-
-    def pause
-      rd, wr = IO.pipe
-      trap('CONT') {
-        log "CONT received; resuming job processing"
-        @paused = false
-        wr.write 'x'
-        wr.close
-      }
-      rd.read 1
-      rd.close
     end
 
     # Stop processing jobs after the current one has completed (if we're
@@ -339,6 +308,12 @@ module Resque
     def pause_processing
       log "USR2 received; pausing job processing"
       @paused = true
+    end
+
+    # Start processing jobs again after a pause
+    def unpause_processing
+      log "CONT received; resuming job processing"
+      @paused = false
     end
 
     # Looks for any workers which should be running on this server
@@ -403,6 +378,7 @@ module Resque
     # Given a job, tells Redis we're working on it. Useful for seeing
     # what workers are doing and when.
     def working_on(job)
+      job.worker = self
       data = encode \
         :queue   => job.queue,
         :run_at  => Time.now.strftime("%Y/%m/%d %H:%M:%S %Z"),
@@ -487,13 +463,14 @@ module Resque
     end
     alias_method :id, :to_s
 
+    # chomp'd hostname of this machine
     def hostname
-      Socket.gethostname
+      @hostname ||= `hostname`.chomp
     end
 
     # Returns Integer PID of running worker
     def pid
-      Process.pid
+      @pid ||= to_s.split(":")[1].to_i
     end
 
     # Returns an Array of string pids of all the other workers on this
@@ -511,7 +488,7 @@ module Resque
     # Returns an Array of string pids of all the other workers on this
     # machine. Useful when pruning dead workers on startup.
     def linux_worker_pids
-      `ps -A -o pid,command | grep "[r]esque" | grep -v "resque-web"`.split("\n").map do |line|
+      `ps -A -o pid,command | grep [r]esque | grep -v "resque-web"`.split("\n").map do |line|
         line.split(' ')[0]
       end
     end
@@ -521,7 +498,7 @@ module Resque
     # Returns an Array of string pids of all the other workers on this
     # machine. Useful when pruning dead workers on startup.
     def solaris_worker_pids
-      `ps -A -o pid,comm | grep "[r]uby" | grep -v "resque-web"`.split("\n").map do |line|
+      `ps -A -o pid,comm | grep [r]uby | grep -v "resque-web"`.split("\n").map do |line|
         real_pid = line.split(' ')[0]
         pargs_command = `pargs -a #{real_pid} 2>/dev/null | grep [r]esque | grep -v "resque-web"`
         if pargs_command.split(':')[1] == " resque-#{Resque::Version}"
